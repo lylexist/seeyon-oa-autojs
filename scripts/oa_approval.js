@@ -273,28 +273,52 @@ async function batchApprove(_, tasks, opinion = OA_OPINION) {
     }
 
     // 页面是 Vue SPA（Ant Design），用 JS 选中复选框
-    const checkResult = await page.evaluate((targetIds) => {
+    // isAll=true 时全选，否则只选匹配 affairId 的行
+    const isAll = affairIds.length === 0 ||
+                  (tasks.length > 0 && affairIds.length === tasks.length &&
+                   tasks.every(t => affairIds.includes(t.affairId)));
+
+    const checkResult = await page.evaluate(({ targetIds, selectAll }) => {
       const info = [];
-      // 先选头部全选框（如果是全部任务）
-      const allRows = document.querySelectorAll('tr.ant-table-row, [class*="table-row"], [class*="list-item"]');
       let clicked = 0;
-      allRows.forEach(row => {
-        const rowText = row.textContent || '';
-        const cb = row.querySelector('input[type=checkbox], span.ant-checkbox-inner, .ant-checkbox');
-        // 通过行内数据判断是否是目标任务（检查文本或data属性）
-        const isTarget = targetIds.some(id => rowText.includes(id) || rowText.length > 0);
-        if (cb && isTarget) {
-          cb.click(); clicked++;
-          info.push(rowText.substring(0, 50));
+
+      if (selectAll) {
+        // 全选：点击表头复选框
+        const allCb = document.querySelector('thead input[type=checkbox], .ant-table-selection-column input[type=checkbox]');
+        if (allCb) { allCb.dispatchEvent(new MouseEvent('click', {bubbles:true})); clicked = -1; }
+      } else {
+        // 精确选择：遍历每一行，匹配 subject 文本中包含目标任务关键字
+        // 由于行内不直接显示 affairId，改用 subject 文本匹配
+        // targetSubjects 在调用时传入
+        const rows = document.querySelectorAll('tr.ant-table-row, [class*="table-row"]');
+        rows.forEach(row => {
+          const rowText = row.textContent || '';
+          const cb = row.querySelector('input[type=checkbox], span.ant-checkbox-inner, .ant-checkbox-input');
+          // 检查行内链接或 fiber-id 属性中是否有目标 affairId
+          const links = row.querySelectorAll('a, [data-affair-id], [affair-id]');
+          let matched = false;
+          links.forEach(el => {
+            const id = el.getAttribute('data-affair-id') || el.getAttribute('affair-id') || '';
+            if (targetIds.includes(id)) matched = true;
+          });
+          // 备用：如果行文本包含 affairId（某些版本会渲染出来）
+          if (!matched) matched = targetIds.some(id => rowText.includes(id));
+          if (matched && cb) {
+            cb.dispatchEvent(new MouseEvent('click', {bubbles:true}));
+            clicked++;
+            info.push(rowText.substring(0, 60));
+          }
+        });
+
+        // 如果精确匹配失败（行内没有 affairId），回退：找全选后提示
+        if (clicked === 0) {
+          info.push('WARNING: 无法按 affairId 精确匹配行，将全选当前页');
+          const allCb = document.querySelector('thead input[type=checkbox], .ant-table-selection-column input[type=checkbox]');
+          if (allCb) { allCb.dispatchEvent(new MouseEvent('click', {bubbles:true})); clicked = -1; }
         }
-      });
-      // 如果没选到，尝试全选
-      if (clicked === 0) {
-        const selectAll = document.querySelector('thead input[type=checkbox], .ant-table-selection-column input[type=checkbox]');
-        if (selectAll) { selectAll.click(); clicked = -1; }
       }
-      return { clicked, info };
-    }, affairIds);
+      return { clicked, info, selectAll };
+    }, { targetIds: affairIds, selectAll: isAll });
     console.log('  选中结果:', JSON.stringify(checkResult));
     await page.waitForTimeout(800);
 
