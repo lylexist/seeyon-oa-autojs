@@ -123,28 +123,32 @@ managerMethod=getPendingList&arguments=[{"page":1},{"aiSort":"false","templeteId
 翻页：修改 `arguments` 中的 `page` 值（从 1 开始）。
 
 ### 3. 批量审批（同意）
-分两步：预检 + 提交。
 
-**步骤一：预检（preBatch）**
+**实现方式：Playwright UI 自动化**（非直接 API 调用）
+
+经验证，纯 HTTP API 方式存在 session 冲突问题（第二次登录时 preBatch 被重定向），
+因此采用 Playwright 模拟真实用户操作：
+
+1. 重新登录（独立浏览器会话），处理「已登录」弹窗
+2. 导航到 `/collaboration/collaboration.do?method=listPending`
+3. 用 `element.dispatchEvent(new MouseEvent('click'))` 选中任务复选框（Ant Design Vue SPA，不能直接 Playwright click）
+4. 用同样方式点击 `#button-batchDeal` 批处理按钮（父 div 遮罩拦截指针事件）
+5. 批处理对话框以内嵌 modal 形式打开（非新页面）
+6. 找到 `form[action*=doBatch]`，填入 `textarea[name=content]` = opinion，提交 form
+7. 或找到「确定」按钮点击
+
+**关键坑点**：
+- 批处理按钮 `#button-batchDeal` 被父容器 `.pending-toolbar-conent` 遮挡，必须用 `dispatchEvent` 而非 Playwright `.click()`
+- 页面是 Vue SPA（Ant Design），复选框需用 JS 触发点击
+- 每次 `approve` 操作会额外启动一次浏览器登录（共两次：一次获取待办列表，一次执行审批）
+- 批处理每次处理当前页面显示的所有选中任务（默认 20 条/页）
+
+**参考 API（审批前查询用）**：
 ```
-POST https://weoa.ysiadata.cn:8443/seeyon/collaboration/batchController.do?method=preBatch
-Cookie: JSESSIONID=<session>
-
-affairId=<id>&summaryId=<id>&category=&processId=<id>
+POST /seeyon/ajax.do?method=ajaxAction&managerName=pendingManager&rnd=<t>
+managerMethod=getMoreList4SectionContion&arguments=[{"page":1},{"fragmentId":"2075546533064298488","state":"3","sectionName":"pendingSection","bigTitleIndex":"0","isTrack":"false","condition":"subject","textfield":"","aiSortValue":"0"}]
 ```
-返回 HTML 对话框（状态码 200 即成功）。
-
-**步骤二：提交审批（batch）**
-```
-POST https://weoa.ysiadata.cn:8443/seeyon/collaboration/batchController.do?method=batch&attitude=agree&opinion=<opinion>
-Cookie: JSESSIONID=<session>
-
-affairId=<id>&summaryId=<id>&category=&processId=<id>&resultCode=&parameter=agree_<opinion>
-```
-
-- `attitude` 可选值: `agree`（同意）、`disagree`（不同意）、`haveRead`（知会）
-- `opinion` 是审批意见文本（如 "同意"）
-- `parameter` 格式: `<attitude>_<opinion>`
+返回待办中心 widget 的任务列表（用于 `list` 命令）。
 
 ### 4. 查看任务详情页
 ```
@@ -157,8 +161,8 @@ GET https://weoa.ysiadata.cn:8443/seeyon/app/collaboration/index.html?method=sum
 - 已办流程列表: `/seeyon/collaboration/collaboration.do?method=listDone`
 
 ## 注意事项
-- 系统有单会话保护，同一账号同一时间只能有一个活跃会话
-- 审批操作不可撤销，请在执行前确认任务范围
-- 审批意见为必填项，不填则系统可能拒绝
-- 某些任务类型（如知会类）可能需要使用 `haveRead` 而非 `agree`
-- 建议先运行 `list` 确认任务列表后再执行批量审批
+- **审批不可撤销**，执行前请先用 `list` 确认任务范围
+- 系统有单会话保护，`approve` 命令内部会再次登录，共触发两次浏览器启动（约 20-30 秒）
+- 批处理每次处理当前页的所有勾选任务（默认 20 条/页），超过 20 条需多次运行
+- 知会类任务（如网络维修上报）用 `agree` 态度也能通过，系统自动处理
+- `.env` 文件含敏感信息，已加入 `.gitignore`，请勿提交
