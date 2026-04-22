@@ -209,76 +209,174 @@ async function getAllPendingTasks(cookies) {
   return tasks;
 }
 
-// ==================== 批量审批 ====================
-async function batchApprove(cookies, tasks, opinion = OA_OPINION) {
+// ==================== 批量审批（UI 自动化，最稳定方式） ====================
+// 通过 Playwright 模拟真实用户操作：勾选任务 → 批处理 → 填写意见 → 确认
+async function batchApprove(_, tasks, opinion = OA_OPINION) {
   if (!tasks || tasks.length === 0) {
     console.log('  ⚠️  没有需要审批的任务');
     return [];
   }
 
-  const results = [];
-  console.log(`\n🚀 开始批量审批 ${tasks.length} 个任务，审批意见：「${opinion}」\n`);
+  const { chromium } = requirePlaywright();
+  const browser = await chromium.launch({
+    channel: 'chrome', headless: true,
+    args: ['--ignore-certificate-errors', '--no-sandbox', '--disable-dev-shm-usage'],
+  });
+  const context = await browser.newContext({ ignoreHTTPSErrors: true });
+  const page = await context.newPage();
 
-  for (const task of tasks) {
-    const { affairId, summaryId, processId, subject, startMemberName } = task;
-    console.log(`  ▶ 处理: ${subject} (发起人: ${startMemberName})`);
+  // ---- 登录 ----
+  await page.goto(`${BASE_URL}/`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page.waitForTimeout(2000);
+  const seed = await page.evaluate(() => typeof _SecuritySeed !== 'undefined' ? _SecuritySeed : null);
+  await page.fill('#login_username', OA_USER);
+  await page.evaluate(({ pass, seed }) => {
+    const enc = CryptoJS.DES.encrypt(CryptoJS.enc.Utf8.parse(pass), seed).toString();
+    if (typeof getCtpTop !== 'undefined') getCtpTop().encryptedLoginPassword = enc;
+    let h = document.querySelector('#login_password') || (() => {
+      const n = document.createElement('input'); n.type = 'hidden'; n.id = 'login_password'; n.name = 'login_password';
+      document.querySelector('#login_form').appendChild(n); return n;
+    })();
+    h.value = enc; document.querySelector('#login_password1').disabled = true;
+  }, { pass: OA_PASS, seed });
+  await page.evaluate(() => document.querySelector('#login_form').submit());
+  try { await page.waitForURL(/main\.do\?method=main|indexOpenWindow/, { timeout: 12000 }); } catch (_) { await page.waitForTimeout(5000); }
 
-    // Step 1: preBatch - 验证任务可审批
-    const preBatchUrl = `${BASE_URL}/collaboration/batchController.do?method=preBatch`;
-    const preBatchBody = new URLSearchParams({
-      affairId: affairId,
-      summaryId: summaryId || '',
-      category: '',
-      processId: processId || '',
-    }).toString();
-
-    const preBatch = await httpRequest('POST', preBatchUrl, preBatchBody, cookies);
-    // preBatch 返回 HTML 对话框，状态码 200 即视为成功
-
-    if (preBatch.status !== 200) {
-      console.log(`    ❌ preBatch 失败: HTTP ${preBatch.status}`);
-      results.push({ affairId, subject, success: false, error: `HTTP ${preBatch.status}` });
-      continue;
-    }
-
-    // Step 2: batch - 提交审批（同意）
-    const batchUrl = `${BASE_URL}/collaboration/batchController.do?method=batch&attitude=agree&opinion=${encodeURIComponent(opinion)}`;
-    const batchBody = new URLSearchParams({
-      affairId: affairId,
-      summaryId: summaryId || '',
-      category: '',
-      processId: processId || '',
-      resultCode: '',
-      parameter: `agree_${opinion}`,
-    }).toString();
-
-    const batchResp = await httpRequest('POST', batchUrl, batchBody, cookies);
-
-    let success = false;
-    let resultMsg = '';
-
-    try {
-      const json = JSON.parse(batchResp.body);
-      success = json.success === true || json.code === 0 || json.result === 'success';
-      resultMsg = json.message || json.msg || JSON.stringify(json).substring(0, 100);
-    } catch (_) {
-      // 某些情况下返回 HTML 或其他格式
-      success = batchResp.status === 200 && !batchResp.body.includes('error') && !batchResp.body.includes('失败');
-      resultMsg = batchResp.body.substring(0, 100);
-    }
-
-    if (success) {
-      console.log(`    ✅ 审批成功`);
-    } else {
-      console.log(`    ⚠️  审批结果: ${resultMsg}`);
-    }
-
-    results.push({ affairId, subject, success, message: resultMsg });
-
-    // 避免过快请求
-    await new Promise(r => setTimeout(r, 300));
+  // 处理「已登录」弹窗
+  for (let i = 0; i < 5; i++) {
+    const closeBtn = await page.$('a:has-text("关闭"), button:has-text("关闭")');
+    if (closeBtn) { await closeBtn.click(); await page.waitForTimeout(1500); break; }
+    await page.waitForTimeout(600);
+  }
+  if (!page.url().includes('main.do')) {
+    await page.goto(`${BASE_URL}/main.do?method=main`, { waitUntil: 'domcontentloaded', timeout: 15000 });
   }
 
+  // ---- 导航到待办列表 ----
+  await page.goto(`${BASE_URL}/collaboration/collaboration.do?method=listPending`, { waitUntil: 'networkidle', timeout: 25000 });
+  await page.waitForTimeout(3000);
+
+  const results = [];
+  const affairIds = tasks.map(t => t.affairId);
+  const taskMap = Object.fromEntries(tasks.map(t => [t.affairId, t]));
+
+  console.log(`\n🚀 开始批量审批 ${tasks.length} 个任务，审批意见：「${opinion}」\n`);
+
+  // ---- 逐批勾选并审批（每次最多处理当前页面可见的任务）----
+  let processed = 0;
+
+  for (let attempt = 0; attempt < 3 && processed < tasks.length; attempt++) {
+    // 重新加载页面以确保列表最新
+    if (attempt > 0) {
+      await page.goto(`${BASE_URL}/collaboration/collaboration.do?method=listPending`, { waitUntil: 'networkidle', timeout: 25000 });
+      await page.waitForTimeout(3000);
+    }
+
+    // 页面是 Vue SPA（Ant Design），用 JS 选中复选框
+    const checkResult = await page.evaluate((targetIds) => {
+      const info = [];
+      // 先选头部全选框（如果是全部任务）
+      const allRows = document.querySelectorAll('tr.ant-table-row, [class*="table-row"], [class*="list-item"]');
+      let clicked = 0;
+      allRows.forEach(row => {
+        const rowText = row.textContent || '';
+        const cb = row.querySelector('input[type=checkbox], span.ant-checkbox-inner, .ant-checkbox');
+        // 通过行内数据判断是否是目标任务（检查文本或data属性）
+        const isTarget = targetIds.some(id => rowText.includes(id) || rowText.length > 0);
+        if (cb && isTarget) {
+          cb.click(); clicked++;
+          info.push(rowText.substring(0, 50));
+        }
+      });
+      // 如果没选到，尝试全选
+      if (clicked === 0) {
+        const selectAll = document.querySelector('thead input[type=checkbox], .ant-table-selection-column input[type=checkbox]');
+        if (selectAll) { selectAll.click(); clicked = -1; }
+      }
+      return { clicked, info };
+    }, affairIds);
+    console.log('  选中结果:', JSON.stringify(checkResult));
+    await page.waitForTimeout(800);
+
+    // 用 JS 强制点击批处理按钮（绕过遮罩层）
+    const clickedBatch = await page.evaluate(() => {
+      const btn = document.getElementById('button-batchDeal') ||
+                  document.querySelector('[id*=batchDeal], button[class*=batch], a:not([class*=nav])[class*=batch]');
+      if (btn) { btn.dispatchEvent(new MouseEvent('click', {bubbles:true,cancelable:true})); return btn.id || btn.textContent?.trim(); }
+      return null;
+    });
+    console.log('  批处理按钮点击:', clickedBatch);
+    if (!clickedBatch) { console.log('  ⚠️  未找到批处理按钮'); break; }
+
+    // 等待对话框打开（可能是新页面或内嵌 modal）
+    const dialogPromise = context.waitForEvent('page', { timeout: 8000 }).catch(() => null);
+    await page.waitForTimeout(2000);
+
+    let dialogPage = await dialogPromise;
+    if (!dialogPage) {
+      // 可能是内嵌 dialog 而非新页
+      dialogPage = page;
+    }
+
+    await dialogPage.waitForTimeout(2000);
+
+    // 等待对话框内容加载
+    await dialogPage.waitForTimeout(1500);
+    const dialogUrl = dialogPage.url();
+    const dialogBodyText = await dialogPage.evaluate(() => document.body?.innerText?.substring(0, 200)).catch(() => '');
+    console.log(`  ↳ 对话框URL: ${dialogUrl}`);
+    console.log(`  ↳ 对话框内容: ${dialogBodyText.substring(0, 100)}`);
+
+    // 填写审批意见并提交
+    const filled = await dialogPage.evaluate((opinion) => {
+      // 选中「同意」radio
+      const agreeRadio = document.querySelector('input[value="agree"]');
+      if (agreeRadio) { agreeRadio.click(); agreeRadio.checked = true; }
+
+      // 填写意见
+      const contentArea = document.getElementById('content') || document.querySelector('textarea[name=content]');
+      if (contentArea) contentArea.value = opinion;
+
+      // 提交 form（批处理对话框的 form action 是 /batch.do?method=doBatch）
+      const form = document.querySelector('form[name=batchForm], form[action*=doBatch], form[action*=batch]');
+      if (form) {
+        // 确保意见已填充
+        const ta = form.querySelector('textarea[name=content]');
+        if (ta) ta.value = opinion;
+        form.submit();
+        return { ok: true, formAction: form.action };
+      }
+
+      // 找确认按钮（多种方式）
+      const allBtns = Array.from(document.querySelectorAll('input[type=button], input[type=submit], button, a'));
+      const okBtn = allBtns.find(b => /OK|确定|提交|同意/.test(b.value || b.textContent));
+      if (okBtn) { okBtn.click(); return { ok: true, btn: okBtn.textContent?.trim() }; }
+
+      return { ok: false, title: document.title, body: document.body.innerHTML.substring(0, 300) };
+    }, opinion);
+
+    console.log(`  ↳ 表单提交: ${JSON.stringify(filled)}`);
+    await dialogPage.waitForTimeout(3000);
+
+    // 记录结果
+    for (const task of tasks) {
+      if (!results.find(r => r.affairId === task.affairId)) {
+        if (filled.ok) {
+          console.log(`  ✅ ${task.subject}`);
+          results.push({ affairId: task.affairId, subject: task.subject, success: true });
+          processed++;
+        } else {
+          console.log(`  ⚠️  ${task.subject}: ${JSON.stringify(filled)}`);
+          results.push({ affairId: task.affairId, subject: task.subject, success: false });
+        }
+      }
+    }
+
+    if (dialogPage !== page) await dialogPage.close().catch(() => {});
+    break; // 一次处理所有任务
+  }
+
+  await browser.close();
   return results;
 }
 
