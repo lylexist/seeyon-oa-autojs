@@ -1,0 +1,15 @@
+# 敏感配置（含账号密码，禁止提交）
+.env
+
+# Node.js 依赖
+node_modules/
+
+# 运行时产物
+*.log
+*.png
+api_report*.json
+api_summary.json
+
+# 系统文件
+.DS_Store
+Thumbs.db
