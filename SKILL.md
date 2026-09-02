@@ -44,6 +44,11 @@ OA_AUTO_CONFIRM=1 node scripts/oa_approval.js approve all
 OA_AUTO_CONFIRM=1 node scripts/oa_approval.js approve 4381277163918150844,2729739659408917657
 ```
 
+### 安全验证审批界面（不提交）
+```bash
+node scripts/oa_approval.js approve 4381277163918150844 --dry-run
+```
+
 ### 批量同意并自定义审批意见
 ```bash
 OA_AUTO_CONFIRM=1 OA_OPINION="已阅，同意" node scripts/oa_approval.js approve all
@@ -129,19 +134,19 @@ managerMethod=getPendingList&arguments=[{"page":1},{"aiSort":"false","templeteId
 经验证，纯 HTTP API 方式存在 session 冲突问题（第二次登录时 preBatch 被重定向），
 因此采用 Playwright 模拟真实用户操作：
 
-1. 重新登录（独立浏览器会话），处理「已登录」弹窗
+1. 复用首次登录获得的浏览器会话，避免重复登录和 session 冲突
 2. 导航到 `/collaboration/collaboration.do?method=listPending`
-3. 用 `element.dispatchEvent(new MouseEvent('click'))` 选中任务复选框（Ant Design Vue SPA，不能直接 Playwright click）
+3. 以表格行的 `data-row-key` 精确匹配 `affairId`，再触发对应复选框
 4. 用同样方式点击 `#button-batchDeal` 批处理按钮（父 div 遮罩拦截指针事件）
-5. 批处理对话框以内嵌 modal 形式打开（非新页面）
-6. 找到 `form[action*=doBatch]`，填入 `textarea[name=content]` = opinion，提交 form
-7. 或找到「确定」按钮点击
+5. 在内嵌 iframe 中选择 `agree` 并填写 `textarea[name=content]`
+6. 点击父页面批处理对话框的「确定」按钮
+7. 再次查询待办列表，只有对应 `affairId` 消失才判定成功
 
 **关键坑点**：
 - 批处理按钮 `#button-batchDeal` 被父容器 `.pending-toolbar-conent` 遮挡，必须用 `dispatchEvent` 而非 Playwright `.click()`
-- 页面是 Vue SPA（Ant Design），复选框需用 JS 触发点击
-- 每次 `approve` 操作会额外启动一次浏览器登录（共两次：一次获取待办列表，一次执行审批）
-- 批处理每次处理当前页面显示的所有选中任务（默认 20 条/页）
+- 页面是 Vue SPA（Ant Design），复选框需用 JS 触发点击并等待状态更新
+- 匹配失败必须终止，禁止回退为全选
+- `--dry-run` 会验证精确选择和批处理表单，然后取消，不产生审批
 
 **参考 API（审批前查询用）**：
 ```
@@ -162,7 +167,7 @@ GET https://weoa.ysiadata.cn:8443/seeyon/app/collaboration/index.html?method=sum
 
 ## 注意事项
 - **审批不可撤销**，执行前请先用 `list` 确认任务范围
-- 系统有单会话保护，`approve` 命令内部会再次登录，共触发两次浏览器启动（约 20-30 秒）
-- 批处理每次处理当前页的所有勾选任务（默认 20 条/页），超过 20 条需多次运行
+- 系统有单会话保护，审批阶段必须复用首次登录会话
+- 脚本会逐页查找指定任务，并分批处理当前页中精确匹配的任务
 - 知会类任务（如网络维修上报）用 `agree` 态度也能通过，系统自动处理
 - `.env` 文件含敏感信息，已加入 `.gitignore`，请勿提交

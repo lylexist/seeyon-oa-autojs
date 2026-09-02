@@ -55,6 +55,12 @@ node scripts/oa_approval.js approve 4381277163918150844,2729739659408917657
 node scripts/oa_approval.js detail 4381277163918150844
 ```
 
+**6. 安全验证指定任务的审批 UI（不会提交）**
+
+```bash
+node scripts/oa_approval.js approve 4381277163918150844 --dry-run
+```
+
 ## 配置说明
 
 在项目根目录创建 `.env` 文件（复制自 `.env.example`）：
@@ -83,6 +89,7 @@ Commands:
   approve all                   同意全部待办
   approve all --opinion <text>  同意全部，指定审批意见
   approve <id1,id2,...>         同意指定 affairId 的任务
+  approve <ids> --dry-run       验证精确选择和审批表单，不提交
   detail <affairId>             查看任务完整数据（JSON）
 ```
 
