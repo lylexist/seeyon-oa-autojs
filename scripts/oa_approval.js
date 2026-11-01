@@ -343,13 +343,16 @@ async function batchApprove(cookies, tasks, opinion = OA_OPINION, dryRun = false
       }
       if (!batchFrame) throw new Error('批处理对话框加载失败');
 
-      const agreeRadio = batchFrame.locator('input[name=atts][value=agree]');
       const opinionArea = batchFrame.locator('textarea[name=content]');
-      await agreeRadio.check({ force: true });
+      const agreeRadio = batchFrame.locator('input[name=atts][value=agree]');
+      const hasAgreeRadio = await agreeRadio.count() > 0;
+      if (hasAgreeRadio) {
+        await agreeRadio.check({ force: true });
+      }
       await opinionArea.fill(opinion);
 
       if (dryRun) {
-        const formReady = await agreeRadio.isChecked() && await opinionArea.inputValue() === opinion;
+        const formReady = (!hasAgreeRadio || await agreeRadio.isChecked()) && await opinionArea.inputValue() === opinion;
         if (!formReady) throw new Error('模拟验证失败：审批态度或意见未正确写入');
         const cancelButton = page.locator('a.layui-layer-btn1:visible').last();
         if (await cancelButton.count() > 0) await cancelButton.dispatchEvent('click');

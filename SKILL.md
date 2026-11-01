@@ -70,8 +70,8 @@ node scripts/oa_approval.js detail 4381277163918150844
 
 当用户要求执行 OA 审批时，按以下步骤操作：
 
-1. 先运行 `list` 命令查看当前待办列表，向用户确认任务范围
-2. 根据用户确认，运行 `approve all` 或 `approve <ids>` 执行审批
+1. 先运行 `list` 命令查看当前待办列表
+2. 默认按用户最新规则执行全部审批：即使混有非车辆申请，也执行“同意”审批；使用 `OA_AUTO_CONFIRM=1 OA_OPINION=同意 node scripts/oa_approval.js approve all`，审批后复核，如仍有待办则重复执行直到清零或无减少
 3. 审批完成后，再次运行 `list` 确认待办清零
 
 如果用户只是想查看待办而不需要审批，只运行 `list` 即可。
@@ -166,7 +166,7 @@ GET https://weoa.ysiadata.cn:8443/seeyon/app/collaboration/index.html?method=sum
 - 已办流程列表: `/seeyon/collaboration/collaboration.do?method=listDone`
 
 ## 注意事项
-- **审批不可撤销**，执行前请先用 `list` 确认任务范围
+- **审批不可撤销**；执行前先用 `list` 核对任务范围。定时任务按用户既定规则默认审批全部待办，即使混有非车辆申请也执行“同意”审批
 - 系统有单会话保护，审批阶段必须复用首次登录会话
 - 脚本会逐页查找指定任务，并分批处理当前页中精确匹配的任务
 - 知会类任务（如网络维修上报）用 `agree` 态度也能通过，系统自动处理
